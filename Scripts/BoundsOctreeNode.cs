@@ -2,7 +2,7 @@
 using UnityEngine;
 
 // A node in a BoundsOctree
-// Copyright 2014 Nition, BSD licence (see LICENCE file). http://nition.co
+// Copyright 2014 Nition, BSD licence (see LICENCE file). www.momentstudio.co.nz
 public class BoundsOctreeNode<T> {
 	// Centre of this node
 	public Vector3 Center { get; private set; }
@@ -28,15 +28,17 @@ public class BoundsOctreeNode<T> {
 	// Child nodes, if any
 	BoundsOctreeNode<T>[] children = null;
 
+	bool HasChildren { get { return children != null; } }
+
 	// Bounds of potential children to this node. These are actual size (with looseness taken into account), not base size
 	Bounds[] childBounds;
 
-	// If there are already numObjectsAllowed in a node, we split it into children
+	// If there are already NUM_OBJECTS_ALLOWED in a node, we split it into children
 	// A generally good number seems to be something around 8-15
-	const int numObjectsAllowed = 8;
+	const int NUM_OBJECTS_ALLOWED = 8;
 
 	// An object in the octree
-	class OctreeObject {
+	struct OctreeObject {
 		public T Obj;
 		public Bounds Bounds;
 	}
@@ -332,7 +334,7 @@ public class BoundsOctreeNode<T> {
 		int bestFit = -1;
 		for (int i = 0; i < objects.Count; i++) {
 			OctreeObject curObj = objects[i];
-			int newBestFit = BestFitChild(curObj.Bounds);
+			int newBestFit = BestFitChild(curObj.Bounds.center);
 			if (i == 0 || newBestFit == bestFit) {
 				// In same octant as the other(s). Does it fit completely inside that octant?
 				if (Encapsulates(childBounds[newBestFit], curObj.Bounds)) {
@@ -384,7 +386,32 @@ public class BoundsOctreeNode<T> {
 		return children[bestFit];
 	}
 
-	/*
+	/// <summary>
+	/// Find which child node this object would be most likely to fit in.
+	/// </summary>
+	/// <param name="objBounds">The object's bounds.</param>
+	/// <returns>One of the eight child octants.</returns>
+	public int BestFitChild(Vector3 objBoundsCenter) {
+		return (objBoundsCenter.x <= Center.x ? 0 : 1) + (objBoundsCenter.y >= Center.y ? 0 : 4) + (objBoundsCenter.z <= Center.z ? 0 : 2);
+	}
+
+    /// <summary>
+    /// Checks if this node or anything below it has something in it.
+    /// </summary>
+    /// <returns>True if this node or any of its children, grandchildren etc have something in them</returns>
+    public bool HasAnyObjects() {
+        if (objects.Count > 0) return true;
+
+        if (children != null) {
+            for (int i = 0; i < 8; i++) {
+                if (children[i].HasAnyObjects()) return true;
+            }
+        }
+
+        return false;
+    }
+
+    /*
 	/// <summary>
 	/// Get the total amount of objects in this node and all its children, grandchildren etc. Useful for debugging.
 	/// </summary>
@@ -401,16 +428,16 @@ public class BoundsOctreeNode<T> {
 	}
 	*/
 
-	// #### PRIVATE METHODS ####
+    // #### PRIVATE METHODS ####
 
-	/// <summary>
-	/// Set values for this node. 
-	/// </summary>
-	/// <param name="baseLengthVal">Length of this node, not taking looseness into account.</param>
-	/// <param name="minSizeVal">Minimum size of nodes in this octree.</param>
-	/// <param name="loosenessVal">Multiplier for baseLengthVal to get the actual size.</param>
-	/// <param name="centerVal">Centre position of this node.</param>
-	void SetValues(float baseLengthVal, float minSizeVal, float loosenessVal, Vector3 centerVal) {
+    /// <summary>
+    /// Set values for this node. 
+    /// </summary>
+    /// <param name="baseLengthVal">Length of this node, not taking looseness into account.</param>
+    /// <param name="minSizeVal">Minimum size of nodes in this octree.</param>
+    /// <param name="loosenessVal">Multiplier for baseLengthVal to get the actual size.</param>
+    /// <param name="centerVal">Centre position of this node.</param>
+    void SetValues(float baseLengthVal, float minSizeVal, float loosenessVal, Vector3 centerVal) {
 		BaseLength = baseLengthVal;
 		minSize = minSizeVal;
 		looseness = loosenessVal;
@@ -442,21 +469,24 @@ public class BoundsOctreeNode<T> {
 	/// <param name="objBounds">3D bounding box around the object.</param>
 	void SubAdd(T obj, Bounds objBounds) {
 		// We know it fits at this level if we've got this far
-		// Just add if few objects are here, or children would be below min size
-		if (objects.Count < numObjectsAllowed || (BaseLength / 2) < minSize) {
-			OctreeObject newObj = new OctreeObject { Obj = obj, Bounds = objBounds };
-			//Debug.Log("ADD " + obj.name + " to depth " + depth);
-			objects.Add(newObj);
-		}
-		else {
-			// Fits at this level, but we can go deeper. Would it fit there?
 
+		// We always put things in the deepest possible child
+		// So we can skip some checks if there are children aleady
+		if (!HasChildren) {
+			// Just add if few objects are here, or children would be below min size
+			if (objects.Count < NUM_OBJECTS_ALLOWED || (BaseLength / 2) < minSize) {
+				OctreeObject newObj = new OctreeObject { Obj = obj, Bounds = objBounds };
+				objects.Add(newObj);
+				return; // We're done. No children yet
+			}
+
+			// Fits at this level, but we can go deeper. Would it fit there?
 			// Create the 8 children
 			int bestFitChild;
 			if (children == null) {
 				Split();
 				if (children == null) {
-					Debug.Log("Child creation failed for an unknown reason. Early exit.");
+					Debug.LogError("Child creation failed for an unknown reason. Early exit.");
 					return;
 				}
 
@@ -464,8 +494,8 @@ public class BoundsOctreeNode<T> {
 				for (int i = objects.Count - 1; i >= 0; i--) {
 					OctreeObject existingObj = objects[i];
 					// Find which child the object is closest to based on where the
-					// object's center is located in relation to the octree's center.
-					bestFitChild = BestFitChild(existingObj.Bounds);
+					// object's center is located in relation to the octree's center
+					bestFitChild = BestFitChild(existingObj.Bounds.center);
 					// Does it fit?
 					if (Encapsulates(children[bestFitChild].bounds, existingObj.Bounds)) {
 						children[bestFitChild].SubAdd(existingObj.Obj, existingObj.Bounds); // Go a level deeper					
@@ -473,17 +503,17 @@ public class BoundsOctreeNode<T> {
 					}
 				}
 			}
+		}
 
-			// Now handle the new object we're adding now
-			bestFitChild = BestFitChild(objBounds);
-			if (Encapsulates(children[bestFitChild].bounds, objBounds)) {
-				children[bestFitChild].SubAdd(obj, objBounds);
-			}
-			else {
-				OctreeObject newObj = new OctreeObject { Obj = obj, Bounds = objBounds };
-				//Debug.Log("ADD " + obj.name + " to depth " + depth);
-				objects.Add(newObj);
-			}
+		// Handle the new object we're adding now
+		int bestFit = BestFitChild(objBounds.center);
+		if (Encapsulates(children[bestFit].bounds, objBounds)) {
+			children[bestFit].SubAdd(obj, objBounds);
+		}
+		else {
+			// Didn't fit in a child. We'll have to it to this node instead
+			OctreeObject newObj = new OctreeObject { Obj = obj, Bounds = objBounds };
+			objects.Add(newObj);
 		}
 	}
 
@@ -504,7 +534,7 @@ public class BoundsOctreeNode<T> {
 		}
 
 		if (!removed && children != null) {
-			int bestFitChild = BestFitChild(objBounds);
+			int bestFitChild = BestFitChild(objBounds.center);
 			removed = children[bestFitChild].SubRemove(obj, objBounds);
 		}
 
@@ -565,15 +595,6 @@ public class BoundsOctreeNode<T> {
 	}
 
 	/// <summary>
-	/// Find which child node this object would be most likely to fit in.
-	/// </summary>
-	/// <param name="objBounds">The object's bounds.</param>
-	/// <returns>One of the eight child octants.</returns>
-	int BestFitChild(Bounds objBounds) {
-		return (objBounds.center.x <= Center.x ? 0 : 1) + (objBounds.center.y >= Center.y ? 0 : 4) + (objBounds.center.z <= Center.z ? 0 : 2);
-	}
-
-	/// <summary>
 	/// Checks if there are few enough objects in this node and its children that the children should all be merged into this.
 	/// </summary>
 	/// <returns>True there are less or the same abount of objects in this and its children than numObjectsAllowed.</returns>
@@ -589,22 +610,6 @@ public class BoundsOctreeNode<T> {
 				totalObjects += child.objects.Count;
 			}
 		}
-		return totalObjects <= numObjectsAllowed;
-	}
-
-	/// <summary>
-	/// Checks if this node or anything below it has something in it.
-	/// </summary>
-	/// <returns>True if this node or any of its children, grandchildren etc have something in them</returns>
-	public bool HasAnyObjects() {
-		if (objects.Count > 0) return true;
-
-		if (children != null) {
-			for (int i = 0; i < 8; i++) {
-				if (children[i].HasAnyObjects()) return true;
-			}
-		}
-
-		return false;
+		return totalObjects <= NUM_OBJECTS_ALLOWED;
 	}
 }

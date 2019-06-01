@@ -3,8 +3,8 @@ using System.Linq;
 using UnityEngine;
 
 // A node in a PointOctree
-// Copyright 2014 Nition, BSD licence (see LICENCE file). http://nition.co
-public class PointOctreeNode<T> where T : class {
+// Copyright 2014 Nition, BSD licence (see LICENCE file). www.momentstudio.co.nz
+public class PointOctreeNode<T> {
 	// Centre of this node
 	public Vector3 Center { get; private set; }
 
@@ -23,10 +23,12 @@ public class PointOctreeNode<T> where T : class {
 	// Child nodes, if any
 	PointOctreeNode<T>[] children = null;
 
+	bool HasChildren { get { return children != null; } }
+
 	// bounds of potential children to this node. These are actual size (with looseness taken into account), not base size
 	Bounds[] childBounds;
 
-	// If there are already numObjectsAllowed in a node, we split it into children
+	// If there are already NUM_OBJECTS_ALLOWED in a node, we split it into children
 	// A generally good number seems to be something around 8-15
 	const int NUM_OBJECTS_ALLOWED = 8;
 
@@ -151,11 +153,24 @@ public class PointOctreeNode<T> where T : class {
 	/// <param name="result">List result.</param>
 	/// <returns>Objects within range.</returns>
 	public void GetNearby(ref Vector3 position, float maxDistance, List<T> result) {
-        // Does the node intersects with the sphere of center = position and radius = maxDistance?
         float sqrMaxDistance = maxDistance * maxDistance;
-        if ((bounds.ClosestPoint(position) - position).sqrMagnitude > sqrMaxDistance) {
+
+#if UNITY_2017_1_OR_NEWER
+		// Does the node intersect with the sphere of center = position and radius = maxDistance?
+		if ((bounds.ClosestPoint(position) - position).sqrMagnitude > sqrMaxDistance) {
             return;
         }
+#else
+		// Does the ray hit this node at all?
+		// Note: Expanding the bounds is not exactly the same as a real distance check, but it's fast
+		// TODO: Does someone have a fast AND accurate formula to do this check?
+		bounds.Expand(new Vector3(maxDistance * 2, maxDistance * 2, maxDistance * 2));
+		bool contained = bounds.Contains(position);
+		bounds.size = actualBoundsSize;
+		if (!contained) {
+			return;
+		}
+#endif
 
 		// Check against any objects in this node
 		for (int i = 0; i < objects.Count; i++) {
@@ -305,7 +320,32 @@ public class PointOctreeNode<T> where T : class {
 		return children[bestFit];
 	}
 
-	/*
+	/// <summary>
+	/// Find which child node this object would be most likely to fit in.
+	/// </summary>
+	/// <param name="objPos">The object's position.</param>
+	/// <returns>One of the eight child octants.</returns>
+	public int BestFitChild(Vector3 objPos) {
+		return (objPos.x <= Center.x ? 0 : 1) + (objPos.y >= Center.y ? 0 : 4) + (objPos.z <= Center.z ? 0 : 2);
+	}
+
+    /// <summary>
+    /// Checks if this node or anything below it has something in it.
+    /// </summary>
+    /// <returns>True if this node or any of its children, grandchildren etc have something in them</returns>
+    public bool HasAnyObjects() {
+        if (objects.Count > 0) return true;
+
+        if (children != null) {
+            for (int i = 0; i < 8; i++) {
+                if (children[i].HasAnyObjects()) return true;
+            }
+        }
+
+        return false;
+    }
+
+    /*
 	/// <summary>
 	/// Get the total amount of objects in this node and all its children, grandchildren etc. Useful for debugging.
 	/// </summary>
@@ -322,15 +362,15 @@ public class PointOctreeNode<T> where T : class {
 	}
 	*/
 
-	// #### PRIVATE METHODS ####
+    // #### PRIVATE METHODS ####
 
-	/// <summary>
-	/// Set values for this node. 
-	/// </summary>
-	/// <param name="baseLengthVal">Length of this node, not taking looseness into account.</param>
-	/// <param name="minSizeVal">Minimum size of nodes in this octree.</param>
-	/// <param name="centerVal">Centre position of this node.</param>
-	void SetValues(float baseLengthVal, float minSizeVal, Vector3 centerVal) {
+    /// <summary>
+    /// Set values for this node. 
+    /// </summary>
+    /// <param name="baseLengthVal">Length of this node, not taking looseness into account.</param>
+    /// <param name="minSizeVal">Minimum size of nodes in this octree.</param>
+    /// <param name="centerVal">Centre position of this node.</param>
+    void SetValues(float baseLengthVal, float minSizeVal, Vector3 centerVal) {
 		SideLength = baseLengthVal;
 		minSize = minSizeVal;
 		Center = centerVal;
@@ -360,37 +400,41 @@ public class PointOctreeNode<T> where T : class {
 	/// <param name="objPos">Position of the object.</param>
 	void SubAdd(T obj, Vector3 objPos) {
 		// We know it fits at this level if we've got this far
-		// Just add if few objects are here, or children would be below min size
-		if (objects.Count < NUM_OBJECTS_ALLOWED || (SideLength / 2) < minSize) {
-			OctreeObject newObj = new OctreeObject { Obj = obj, Pos = objPos };
-			//Debug.Log("ADD " + obj.name + " to depth " + depth);
-			objects.Add(newObj);
-		}
-		else { // Enough objects in this node already: Create new children
-			// Create the 8 children
+
+		// We always put things in the deepest possible child
+		// So we can skip checks and simply move down if there are children aleady
+		if (!HasChildren) {
+			// Just add if few objects are here, or children would be below min size
+			if (objects.Count < NUM_OBJECTS_ALLOWED || (SideLength / 2) < minSize) {
+				OctreeObject newObj = new OctreeObject { Obj = obj, Pos = objPos };
+				objects.Add(newObj);
+				return; // We're done. No children yet
+			}
+			
+			// Enough objects in this node already: Create the 8 children
 			int bestFitChild;
 			if (children == null) {
 				Split();
 				if (children == null) {
-					Debug.Log("Child creation failed for an unknown reason. Early exit.");
+					Debug.LogError("Child creation failed for an unknown reason. Early exit.");
 					return;
 				}
 
-				// Now that we have the new children, see if this node's existing objects would fit there
+				// Now that we have the new children, move this node's existing objects into them
 				for (int i = objects.Count - 1; i >= 0; i--) {
 					OctreeObject existingObj = objects[i];
 					// Find which child the object is closest to based on where the
-					// object's center is located in relation to the octree's center.
+					// object's center is located in relation to the octree's center
 					bestFitChild = BestFitChild(existingObj.Pos);
 					children[bestFitChild].SubAdd(existingObj.Obj, existingObj.Pos); // Go a level deeper					
 					objects.Remove(existingObj); // Remove from here
 				}
 			}
-
-			// Now handle the new object we're adding now
-			bestFitChild = BestFitChild(objPos);
-			children[bestFitChild].SubAdd(obj, objPos);
 		}
+
+		// Handle the new object we're adding now
+		int bestFit = BestFitChild(objPos);
+		children[bestFit].SubAdd(obj, objPos);
 	}
 
 	/// <summary>
@@ -471,15 +515,6 @@ public class PointOctreeNode<T> where T : class {
 	}
 
 	/// <summary>
-	/// Find which child node this object would be most likely to fit in.
-	/// </summary>
-	/// <param name="objPos">The object's position.</param>
-	/// <returns>One of the eight child octants.</returns>
-	int BestFitChild(Vector3 objPos) {
-		return (objPos.x <= Center.x ? 0 : 1) + (objPos.y >= Center.y ? 0 : 4) + (objPos.z <= Center.z ? 0 : 2);
-	}
-
-	/// <summary>
 	/// Checks if there are few enough objects in this node and its children that the children should all be merged into this.
 	/// </summary>
 	/// <returns>True there are less or the same abount of objects in this and its children than numObjectsAllowed.</returns>
@@ -496,19 +531,6 @@ public class PointOctreeNode<T> where T : class {
 			}
 		}
 		return totalObjects <= NUM_OBJECTS_ALLOWED;
-	}
-
-	// Returns true if this node or any of its children, grandchildren etc have something in them
-	bool HasAnyObjects() {
-		if (objects.Count > 0) return true;
-
-		if (children != null) {
-			for (int i = 0; i < 8; i++) {
-				if (children[i].HasAnyObjects()) return true;
-			}
-		}
-
-		return false;
 	}
 
 	/// <summary>
